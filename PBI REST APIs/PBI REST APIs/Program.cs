@@ -5,6 +5,7 @@ using Microsoft.IdentityModel.Clients.ActiveDirectory;
 using System.Text;
 //Install-Package Newtonsoft.Json 
 using Newtonsoft.Json;
+using System.IO;
 
 namespace ConsoleApplication39
 {
@@ -27,57 +28,157 @@ namespace ConsoleApplication39
         private static string authority = "https://login.windows.net/common/oauth2/authorize";
 
         private static AuthenticationContext authContext = null;
-        private static string token = String.Empty;
-          
+        private static string token = String.Empty; 
+
         static void Main(string[] args)
         {
 
-            
+            HttpWebResponse response;
             string responseText;
-            string gatewayID="";
+            //This is the targetgatewayName that you'd like to create datasource for
+            string targetGatewayName = "wxsqltest01";
+            string targetDataSourceName = "MyDataSource";
 
-            //get gateways
+            string gatewayID = "";
+            string datasourceID = "";
+
+            #region get gateways 
             responseText = getGateways();
 
-            dynamic respJson =  JsonConvert.DeserializeObject<dynamic>(responseText);
+            dynamic respJson = JsonConvert.DeserializeObject<dynamic>(responseText);
 
-            foreach (var gateway in respJson.value) { 
-                Console.WriteLine(gateway["id"]); 
-                Console.WriteLine(gateway["name"]);
+            foreach (var gateway in respJson.value)
+            {
 
                 //get the gatewayID of my target gateway
-                if (gateway["name"] == "myTargetGateway") {
-
+                if (gateway["name"] == targetGatewayName)
+                {
                     gatewayID = gateway["id"];
+                    Console.WriteLine(gateway["id"]);
+                    Console.WriteLine(gateway["name"]);
+                    Console.WriteLine("");
                 }
 
             }
+            #endregion
 
-            //get datasources from the targetGateway
+
+            #region list all data sources in the target gateway
+
             if (!string.IsNullOrEmpty(gatewayID))
             {
-                responseText = getDataSources(gatewayID);
+                responseText = getDataSourcesInfo(gatewayID, null,false);
+                respJson = JsonConvert.DeserializeObject<dynamic>(responseText);
 
-
+                foreach (var datasource in respJson.value)
+                {
+                    Console.WriteLine("datasourceName:{0}", datasource["datasourceName"]);
+                    Console.WriteLine("datasourceType:{0}", datasource["datasourceType"]);
+                    Console.WriteLine("connectionDetails:{0}", datasource["connectionDetails"]);
+                    Console.WriteLine("");
+                }
             }
 
+            #endregion
+
+            string isCreated = "";
+            #region create a datasource for the target gateway
+            if (!string.IsNullOrEmpty(gatewayID))
+            {
+                response = CreateDatasource(targetDataSourceName, gatewayID);
+                isCreated = response.StatusCode.ToString();
+
+                using (var reader = new System.IO.StreamReader(response.GetResponseStream(), ASCIIEncoding.ASCII))
+                {
+                    responseText = reader.ReadToEnd();
+                    respJson = JsonConvert.DeserializeObject<dynamic>(responseText);
+                    datasourceID =  respJson["id"]; 
+                }
+                 
+            }
+            #endregion
 
 
+            #region get the created datasources from the targetGateway
+            if (isCreated == "Created"&& !string.IsNullOrEmpty(datasourceID)) {
 
+                responseText = getDataSourcesInfo(gatewayID, datasourceID,false);
+                respJson = JsonConvert.DeserializeObject<dynamic>(responseText); 
+            }
+            #endregion
 
+            #region get datasource users 
+            responseText = getDataSourcesInfo(gatewayID, datasourceID, true);
+            respJson = JsonConvert.DeserializeObject<dynamic>(responseText);
 
-
-
-
+            foreach (var users in respJson.value)
+            {
+                Console.WriteLine("emailAddress:{0}", users["emailAddress"]);
+                Console.WriteLine("datasourceAccessRight:{0}", users["datasourceAccessRight"]); 
+                Console.WriteLine("");
+            } 
+            #endregion
+             
 
             Console.ReadKey();
+
+        }
+
+
+        static HttpWebResponse CreateDatasource(string datasourceName, string gatewayId)
+        {
+
+            string powerBIDatasourcesApiUrl = String.Format("https://api.powerbi.com/v1.0/myorg/gateways/{0}/datasources", gatewayId);
+
+            HttpWebRequest request = System.Net.WebRequest.Create(powerBIDatasourcesApiUrl) as System.Net.HttpWebRequest;
+            //POST web request to create a datasource.
+            request.KeepAlive = true;
+            request.Method = "POST";
+            request.ContentLength = 0;
+            request.ContentType = "application/json";
+
+            //Add token to the request header
+            request.Headers.Add("Authorization", String.Format("Bearer {0}", token));
+
+            //Create dataset JSON for POST request
+            string datasourceJson =
+                "{" +
+                    "\"dataSourceName\":\"" + datasourceName + "\"," +
+                    "\"dataSourceType\":\"Sql\"," +
+                    "\"onPremGatewayRequired\":true," +
+                    "\"connectionDetails\":\"{\\\"server\\\":\\\"ericvm2\\\",\\\"database\\\":\\\"testdb2\\\"}\"," +
+                    "\"credentialDetails\":{  " +
+                    "\"credentials\":\"pkEnC6VcCxPQibuYZin6nk0HHfiHX9n/3UeFmcA/CDvMVDiJxfGtqv+9mfpFXM886f50Nex+24swH9wDMZVIsmIVN2GN2Dr5ba464Nmw5a7TqQjTR+AjnHAA73Ond69HPGDi6yroHizK/y8HDMR4w/MkNvKmEhGUT8VOPeEJELZ1mjaZQ/spZ9kqjjIKHjR5v4z3egKSc3wvloy9hzrkJKQWlMtcbfz5d5BT3bUSetcSynFwq5AMdgsjyD1r6S4eUcaoOpzFMLBIA9ft8mhqudb9EtVxwAElZwTwPYQ319XQALC9c4N0oo7/iBGnJjFGIFMm/cpS0EWgGZf192oSRg==\"," +
+                    "\"credentialType\":\"Basic\"," +
+                    "\"encryptedConnection\":\"Encrypted\"," +
+                    "\"privacyLevel\":\"Public\"," +
+                    "\"encryptionAlgorithm\":\"RSA-OAEP\"" +
+                    "}}";
+
+            Console.WriteLine(datasourceJson);
+
+            //POST web request
+            byte[] byteArray = System.Text.Encoding.UTF8.GetBytes(datasourceJson);
+            request.ContentLength = byteArray.Length;
+
+            //Write JSON byte[] into a Stream
+            using (Stream writer = request.GetRequestStream())
+            {
+                writer.Write(byteArray, 0, byteArray.Length);
+
+                var response = (HttpWebResponse)request.GetResponse();
+
+                Console.WriteLine(string.Format("Datasource {0}", response.StatusCode.ToString()));
+
+                return response;
+            }
 
         }
 
         public static string getGateways()
         {
             string responseStatusCode = string.Empty;
-              
+
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create("https://api.powerbi.com/v1.0/myorg/gateways");
 
             request.Method = "GET";
@@ -104,11 +205,27 @@ namespace ConsoleApplication39
 
             return responseText;
         }
-        public static string getDataSources(string gatewayID)
+        public static string getDataSourcesInfo(string gatewayID, string DataSourceID,Boolean isQueryUsers)
         {
             string responseStatusCode = string.Empty;
+            HttpWebRequest request = null;
 
-            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(String.Format("https://api.powerbi.com/v1.0/myorg/gateways/{0}/dataSources", gatewayID));
+            if (!string.IsNullOrEmpty(DataSourceID) && isQueryUsers)
+            {
+                request = (HttpWebRequest)WebRequest.Create(String.Format("https://api.powerbi.com/v1.0/myorg/gateways/{0}/dataSources/{1}/users", gatewayID, DataSourceID));
+
+            }
+            else if (!string.IsNullOrEmpty(DataSourceID))
+            {
+                request = (HttpWebRequest)WebRequest.Create(String.Format("https://api.powerbi.com/v1.0/myorg/gateways/{0}/dataSources/{1}", gatewayID, DataSourceID));
+
+            }
+            else {
+
+                request = (HttpWebRequest)WebRequest.Create(String.Format("https://api.powerbi.com/v1.0/myorg/gateways/{0}/dataSources", gatewayID));
+
+            } 
+
 
             request.Method = "GET";
             request.Headers.Add("Authorization", String.Format("Bearer {0}", AccessToken()));
